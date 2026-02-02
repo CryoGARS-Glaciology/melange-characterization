@@ -7,7 +7,7 @@ addpath('/Users/ellynenderlin/Research/miscellaneous/general-code/');
 
 %site-specific info
 root_dir = '/Users/ellynenderlin/Research/NSF_GrIS-Freshwater/melange/';
-site_abbrev = 'MGG'; site_name = 'Midgard';
+site_abbrev = 'ASG'; site_name = 'Nunatakassaap';
 im_dir = [root_dir,site_abbrev,'/images/S2/'];
 % ref_image = 'S2A_21XWC_20180304_0_L2A_B08_clipped.tif'; %Alison = 'S2A_21XWC_20200731_1_L2A_B08_clipped.tif', %Zachariae = 'S2A_27XWH_20200802_3_L2A_B08_clipped.tif'
 % ref_image  = 'S2A_22WEB_20190216_0_L2A_B08_clipped.tif'; %SEK
@@ -70,7 +70,7 @@ for j = 1:length(date_refs)
         frame = getframe(map_fig);
         gif_im{nimages} = frame2im(frame); nimages = nimages+1;
     else
-        if sorted_dates(j)-last_date >= 7/365
+        if sorted_dates(j)-last_date >= 7/365 %AT LEAST A WEEK BETWEEN IMAGES
             %load the image for the specified date
             [I,R] = readgeoraster([im_dir,ims(im_refs(date_refs(j))).name]);
             im.x = linspace(R.XWorldLimits(1),R.XWorldLimits(2),R.RasterSize(2));

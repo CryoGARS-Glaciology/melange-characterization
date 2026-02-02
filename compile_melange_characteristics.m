@@ -23,6 +23,18 @@ rho_i = 900; %ice density (kg/m^3)
 rho_w = 1026; %water density (kg/m^3)
 Hcutoff = round((rho_w/(rho_w-rho_i))*zcutoff); %H threshold for figure naming
 
+%Velocity parameters: ideally only use velocities from time periods with
+%DEMs to create the seasonal profiles but you can also use all velocities
+%from that season (even if there is no DEM for that season-year combination)
+vfilter = 'annual'; %options: 'annual' OR 'all'
+vdtmin = 15; %maximum image acquisition separation for velocities
+vdtmax = 60; %maximum image acquisition separation for velocities
+dvterm = 'yes'; %include velocities from the terminus
+
+%decide whether to sample data at (1) fixed locations or (2) relative
+%locations with respect to the terminus positions in the DEMs
+sampling = 'dated'; % options: 'dated' OR 'fixed';
+
 %Size distribution parameters
 nthresh = 1e-6; % set small number bin cutoff (n1 must be greater than this value)
 % zthresh = 3; %set small size bin cutoff (freeboard must exceed this value)
@@ -77,7 +89,7 @@ if exist([root_dir,'GrIS-melange-characteristics.mat']) == 2
                 site_start = length(MP)+1;
                 disp(['...restarting on site #',num2str(site_start),' (',sitenames(site_start,:),')']);
             else
-                disp('data reloaded and dataset is fully processed');
+                error('data reloaded and dataset is fully processed');
             end
         case '2) No: start fresh'
             site_start = 1;
@@ -683,18 +695,6 @@ end
 %% extract melange attributes, estimate buttressing, & make overview plots
 close all; drawnow;
 
-%Velocity parameters: ideally only use velocities from time periods with
-%DEMs to create the seasonal profiles but you can also use all velocities
-%from that season (even if there is no DEM for that season-year combination)
-vfilter = 'annual'; %options: 'annual' OR 'all'
-vdtmin = 15; %maximum image acquisition separation for velocities
-vdtmax = 60; %maximum image acquisition separation for velocities
-dvterm = 'yes'; %include velocities from the terminus
-
-%decide whether to sample data at (1) fixed locations or (2) relative
-%locations with respect to the terminus positions in the DEMs
-sampling = 'dated'; % options: 'dated' OR 'fixed';
-
 % %If adding new dates, profiles need to be removed from the structure
 % %because the inland reference may have changed
 % %(will throw errors when concatenating)
@@ -714,131 +714,42 @@ for j = 1:length(MP)
     disp(sitenames(j,:)); site_abbrev = MP(j).name;
     transect_inc = round(nanmean(sqrt((diff(MP(j).V.X).^2 + diff(MP(j).V.Y).^2)))/100)*100;
     
-    %set-up centerline coordinate system
-    C = shaperead([root_dir,sitenames(j,:),'/shapefiles/',sitenames(j,:),'-centerline.shp']);
-    centerline_dist = [0, cumsum(sqrt((C.X(2:end)-C.X(1:end-1)).^2 + (C.Y(2:end)-C.Y(1:end-1)).^2))]';
-    for l = 1:length(MP(j).V.X)
-        dists = sqrt((MP(j).V.X(l)-C.X).^2 + (MP(j).V.Y(l)-C.Y).^2);
-        tran_dist(l) = centerline_dist(find(dists == min(dists)));
-        clear dists;
-    end
     %isolate the dates for data sorting
+    D_dir = [root_dir,MP(j).name,'/'];
     for p = 1:length(MP(j).Z.date)
         term_trace(p) = MP(j).Z.termflag(p);
-        zdate(p) = convert_to_decimaldate(char(MP(j).Z.date(p)));
-        datest = datetime(MP(j).Z.date{p},'InputFormat','yyyyMMdd');
-        zyrs(p) = year(datest); zmos(p) = month(datest);
-        clear datest;
     end
-    
-    %loop through subset size distributions & find the first and last
-    %non-NaN columns to identify melange extent
-    Dsubs = dir([root_dir,MP(j).name,'/',MP(j).name,'*-iceberg-distribution-subsets.csv']);
-    size_classes = [];
-    for p = 1:length(Dsubs)
-        D = readtable([root_dir,MP(j).name,'/',Dsubs(p).name],"VariableNamingRule","preserve");
-        name_split = split(Dsubs(p).name,'-',2);
-        berg_dates(p) = datetime(name_split{2},'Inputformat','yyyyMMdd'); clear name_split;
-
-        %identify observational limits along the centerline
-        berg_nos = table2array(D(:,3:end)); berg_nos(berg_nos==0) = NaN;
-        size_classes(p,:) = sum(~isnan(berg_nos),1);
-        seaward_ext(p) = find(size_classes(p,:)>0,1,'first');
-        inland_ext(p) = find(size_classes(p,:)>0,1,'last')+1;
-
-        %create average thickness profile
-        Havg(p,:) = sum((2/ARcomp.best.autoALL)*sqrt(table2array(D(zcutoff+1:end,1))./pi()).*table2array(D(zcutoff+1:end,3:end)),1)./sum(table2array(D(zcutoff+1:end,3:end)),1);
-        packing(p,:) = sum(table2array(D(zcutoff+1:end,1)).*table2array(D(zcutoff+1:end,3:end)),1)./sum(table2array(D(:,1)).*table2array(D(:,3:end)),1);
-    end
-
-    %assign seaward & inland sampling limits based on the selected sampling
-    %strategy (sampling = ['fixed','dated']
-    inland_meanidx = round(mean(inland_ext(term_trace==1)));
+    [berg_dates,Havg,packing,inland_idx,seaward_idx,seaward_ext,H_seas,pack_seas] = extract_seasonal_binned_DEM_profiles(D_dir,MP(j).name,term_trace,MP(j).Z.termX,MP(j).Z.termY,MP(j).V.X,MP(j).V.Y,ARcomp.best.autoALL,zcutoff,sampling,years,seasons);
+    %create derived variables from elevation-based profile outputs
     seaward_meanidx = round(mean(seaward_ext));
-    if contains(sampling,'fix')
-        inland_idx = inland_meanidx.*ones(size(seaward_ext));
-        seaward_idx = seaward_meanidx.*ones(size(seaward_ext)); 
-    elseif contains(sampling,'date')
-        %if the terminus was visible in the DEM, use it as your reference
-        inland_idx = inland_ext; 
-        
-        %if the terminus was NOT visible in the DEM, use a combination of
-        %the DEM terminus timeseries and TermPicks timeseries to
-        %approximate the terminus location (gaps were filled for termini
-        %with observations within 60 days in the previous section)
-        for p = 1:length(term_trace)
-            if term_trace(p) == 0
-                if ~isnan(MP(j).Z.termdist(p))
-                    dists = sqrt((MP(j).Z.termX(p)-MP(j).V.X).^2 + (MP(j).Z.termY(p)-MP(j).V.Y).^2);
-                    [~,ia] = sort(dists);
-                    inland_idx(p) = max(ia(1:2)); term_trace(p) = 1; %use terminus traces from imagery
-                    clear dists ia;
-                else
-                    inland_idx(p) = NaN;
-                    disp(['Need terminus data for ',MP(j).name,' ',char(MP(j).Z.date(p))])
-                end
-            end
-        end
-        % seaward_idx = inland_idx-(inland_meanidx-seaward_meanidx);
-        seaward_idx = inland_idx-floor(nanmean(inland_idx-seaward_ext));
-    else
-        error('Profile sampling strategy is not properly defined: sampling must be ''fixed'' or ''dated''')
+    for p = 1:size(berg_dates,2)
+        zyrs(p) = year(berg_dates(p)); zmos(p) = month(berg_dates(p));
     end
-    tran_reldist = (tran_dist(inland_meanidx) - tran_dist)+transect_inc/2;
-    centerline_reldist = (tran_dist(inland_meanidx) - centerline_dist)+transect_inc/2;
-
-    %create an annual average seasonal thickness profile
-    Zfilt = MP(j).Z.transectZavg; Zfilt(MP(j).Z.transectZavg==0) = NaN; Zfilt(:,term_trace==0) = NaN;
-    Havg(term_trace==0,:) = NaN; H_seas = NaN(max(inland_idx)-1,4,length(years)); pack_seas = NaN(max(inland_idx)-1,4,length(years)); 
+    %estimate buttressing for each year
     for p = 1:length(years)
         yr_idx = find(zyrs == years(p));
         if ~isempty(yr_idx)
             mos_yr = zmos(yr_idx);
-
-            %create a matrix of elevations relative to the terminus position
-            z_profiles = NaN(max(inland_idx),length(yr_idx));
-            H_profiles = NaN(length(yr_idx),max(inland_idx)-1);
-            pack_profiles = NaN(length(yr_idx),max(inland_idx)-1);
-            for k = 1:length(yr_idx)
-                if ~isnan(inland_idx(yr_idx(k)))
-                    z_temp = flipud(Zfilt(1:inland_idx(yr_idx(k))-1,yr_idx(k)));
-                    z_profiles(1:length(z_temp),k) = z_temp; 
-                    H_temp = fliplr(Havg(yr_idx(k),1:inland_idx(yr_idx(k))-1));
-                    H_profiles(k,1:length(H_temp)) = H_temp; 
-                    pack_temp = fliplr(packing(yr_idx(k),1:inland_idx(yr_idx(k))-1));
-                    pack_profiles(k,1:length(pack_temp)) = pack_temp; 
-                    clear z_temp H_temp pack_temp;
-                end
-            end
-
-            %calculate seasonal averages
             for k = 1:4
-                z_seas(:,k,p) = nanmean(z_profiles(:,ismember(mos_yr,seasons(k,:))==1),2);
-                % H_seas(:,k,p) = (rho_w./(rho_w-rho_i))*nanmean(z_profiles(:,ismember(mos_yr,seasons(k,:))==1),2);
-                H_seas(:,k,p) = nanmean(H_profiles(ismember(mos_yr,seasons(k,:))==1,:),1)';
-                pack_seas(:,k,p) = nanmean(pack_profiles(ismember(mos_yr,seasons(k,:))==1,:),1)';
                 if ~isempty(inland_idx(ismember(mos_yr,seasons(k,:))==1))
                     MP(j).B.ref(1,k,p) = mean(inland_idx(ismember(mos_yr,seasons(k,:))==1))-1;
-                    MP(j).B.Ho(zcutoff+1,k,p) = nanmean(H_profiles(ismember(mos_yr,seasons(k,:))==1,1),1)';
-                    MP(j).B.packing(zcutoff+1,k,p) = nanmean(pack_profiles(ismember(mos_yr,seasons(k,:))==1,1),1)';
+                    MP(j).B.Ho(zcutoff+1,k,p) = H_seas(1,k,p);
+                    MP(j).B.packing(zcutoff+1,k,p) = pack_seas(1,k,p);
                 else
                     MP(j).B.ref(1,k,p) = NaN;
                     MP(j).B.Ho(zcutoff+1,k,p) = NaN;
                     MP(j).B.packing(zcutoff+1,k,p) = NaN;
                 end
             end
-
-            clear z_profiles H_profiles pack_profiles mos_yr;
+            clear mos_yr;
         else
-            %no DEM for that year so fill in all thickness-based datasets
-            %used to calculate buttressing with NaNs
             MP(j).B.ref(1,1:4,p) = NaN;
             MP(j).B.Ho(zcutoff+1,1:4,p) = NaN;
             MP(j).B.packing(zcutoff+1,1:4,p) = NaN;
+
         end
-        clear yr_idx
+        clear yr_idx;
     end
-    z_seas(z_seas==0) = NaN; H_seas(H_seas==0) = NaN; pack_seas(pack_seas==0) = NaN; 
     zdist = (transect_inc/2):transect_inc:(max(inland_idx)-1)*transect_inc; 
     Hdist = zdist-transect_inc/2; MP(j).Z.dist = Hdist;
 
@@ -874,94 +785,8 @@ for j = 1:length(MP)
         inland_vel = max(inland_idx)-1; %only get speeds from the melange
         ref_adjust = 0;
     end
-    %loop through the pts
-    vel_pts = dir([root_dir,sitenames(j,:),'/velocities/']);
-    vel_seas = NaN(max(inland_idx),4,length(years));
-    for i = 1:length(vel_pts)
-        if contains(vel_pts(i).name,'velocity')
-            pt_ref = str2num(vel_pts(i).name(end-5:end-4));
-
-            if pt_ref <= inland_vel %setting this <= and making rel_ref = inland_idx - pt_ref+1 gives the inland pt on the glacier
-
-                %read the file
-                V = readtable([root_dir,sitenames(j,:),'/velocities/',vel_pts(i).name]);
-
-                %filter out all the velocities based on temporal resolution
-                short_dts = find(V.days_dt>vdtmin & V.days_dt<vdtmax); %get rid of all velocities with coarse temporal resolution
-                vel_dates = V.mid_date(short_dts); vel_dts = V.days_dt(short_dts);
-                vmos = month(vel_dates); vyrs = year(vel_dates);
-                vels = V.velocity_m_yr_(short_dts); vels(vels == 0) = NaN;
-
-                %calculate seasonal average speeds for each year at the point
-                if contains(vfilter,'all')
-
-                    %grab velocities for all years
-                    for p = 1:length(years)
-                        yr_idx = find(vyrs == years(p));
-                        if ~isempty(yr_idx)
-
-                            %isolate the velocities for that year
-                            for k = 1:length(yr_idx)
-                                v_temp(k,1) = vels(yr_idx(k));
-                            end
-
-                            %calculate seasonal average
-                            mos_yr = vmos(yr_idx);
-                            for k = 1:4
-                                if ~isempty(zmos(zyrs==years(p)))
-                                    %use the DEMs from that year to come up with the position wrt the terminus
-                                    rel_ref = vterm_idx(p)-pt_ref+ref_adjust; %edit if monthly terminus positions are available
-                                    if rel_ref >=1
-                                        vel_seas(rel_ref,k,p) = nanmean(v_temp(ismember(mos_yr,seasons(k,:))==1));
-                                    end
-                                end
-                            end
-
-                            clear vels_yr mos_yr v_temp;
-                        end
-                        clear yr_idx
-                    end
-
-                elseif contains(vfilter,'annual')
-                    %only use velocities from years with DEMs
-                    for p = 1:length(years)
-                        if sum(ismember(zyrs,years(p))) > 0 %only extract velocities from years with DEMs
-                            yr_idx = find(vyrs == years(p));
-                            if ~isempty(yr_idx)
-
-                                %isolate the velocities for that year
-                                for k = 1:length(yr_idx)
-                                    v_temp(k,1) = vels(yr_idx(k));
-                                end
-
-                                %calculate seasonal average if there is a DEM
-                                %for that year and within that season
-                                mos_yr = vmos(yr_idx);
-                                for k = 1:4
-                                    if ~isempty(zmos(zyrs==years(p) & ismember(zmos,seasons(k,:))))
-                                        %use the DEMs from that season to come
-                                        %up with the position wrt the terminus
-                                        rel_ref = round(median([inland_idx(zyrs==years(p) & ismember(zmos,seasons(k,:))), term_idx(Tyrs==years(p) & ismember(Tmos,seasons(k,:)))]))-pt_ref+ref_adjust; 
-                                        if rel_ref >=1
-                                            vel_seas(rel_ref,k,p) = nanmean(v_temp(ismember(mos_yr,seasons(k,:))==1));
-                                        end
-                                    end
-                                end
-
-                                clear vels_yr mos_yr v_temp;
-                            end
-                            clear yr_idx
-                        end
-                    end
-                else
-                    error('Unkown velocity sampling strategy! vfilter must be ''annual'' or ''all''')
-                end
-
-                clear V short_dts vel_dates vel_dts vmos vyrs vels rel_ref;
-            end
-            clear pt_ref;
-        end
-    end
+    vel_dir = [root_dir,sitenames(j,:),'/velocities/'];
+    vel_seas = create_seasonal_speed_profiles(vel_dir,inland_idx,inland_vel,ref_adjust,vterm_idx,term_idx,Tyrs,Tmos,vdtmin,vdtmax,vfilter,years,seasons,zyrs,zmos);
     vdist = (transect_inc*[0:1:size(vel_seas,1)-1])+((transect_inc/2)-(ref_adjust*transect_inc)); %-(transect_inc/2) start for inland pt on the glacier, (transect_inc/2) start for inland point in the melange
     MP(j).V.dist = vdist;
 
